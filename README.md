@@ -349,3 +349,255 @@ Content-Type: application/json
   "status_code": 404
 }
 ```
+
+## 5. Contacts API Specification
+
+This document specifies the API contract that the backend must implement to provide contact data for the iD4me Caller ID system. The PIR service will consume this API and transform the data into a privacy-preserving PIR database.
+
+---
+
+## Data Flow
+
+```
+┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
+│  Backend API    │  ──────▶│  PIR Service    │  ──────▶│  iOS App        │
+│  (Your system)  │  JSON   │  (Transformer)  │   PIR   │  (Caller ID)    │
+└─────────────────┘         └─────────────────┘         └─────────────────┘
+```
+
+---
+
+## API Endpoint Requirements
+
+### GET /contacts
+
+Returns all contacts for the Caller ID database.
+
+#### Request
+
+```http
+GET /api/v1/contacts
+Authorization: Bearer <api_key>
+Accept: application/json
+```
+
+#### Response
+
+```json
+{
+  "contacts": [
+    {
+      "phone_number": "+61415790018",
+      "name": "John Smith",
+      "category": "person",
+      "block": false,
+      "cache_expiry_minutes": 1440,
+      "icon_url": "https://example.com/icons/contact-123.png"
+    }
+  ],
+  "total_count": 1,
+  "generated_at": "2026-01-13T10:30:00Z"
+}
+```
+
+---
+
+## Data Model
+
+### Contact Object
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `phone_number` | string | **Yes** | E.164 format with `+` prefix (e.g., `+61415790018`) |
+| `name` | string | **Yes** | Display name (max 100 chars) |
+| `category` | string | **Yes** | One of: `person`, `business`, `unspecified` |
+| `block` | boolean | No | If `true`, marks as spam/blocked (default: `false`) |
+| `cache_expiry_minutes` | integer | No | How long iOS caches result (default: `1440` = 24 hours) |
+| `icon_url` | string | No | URL to contact icon/avatar (PNG, max 256x256) |
+
+### Category Mapping
+
+| API Value | PIR Database Value | Description |
+|-----------|-------------------|-------------|
+| `person` | `IDENTITY_CATEGORY_PERSON` | Individual contact |
+| `business` | `IDENTITY_CATEGORY_BUSINESS` | Business/organization |
+| `unspecified` | `IDENTITY_CATEGORY_UNSPECIFIED` | Unknown category |
+
+---
+
+## Phone Number Format
+
+### Requirements
+
+- **Must** be in E.164 international format
+- **Must** start with `+` followed by country code
+- **Must not** contain spaces, dashes, or parentheses
+- **Must** be unique (no duplicates)
+
+### Examples
+
+| Valid | Invalid |
+|-------|---------|
+| `+61415790018` | `0415790018` (missing country code) |
+| `+14155551234` | `+61 415 790 018` (contains spaces) |
+| `+380956414068` | `(415) 555-1234` (wrong format) |
+
+### Normalization
+
+The backend should normalize all phone numbers before returning. Example logic:
+
+```python
+import phonenumbers
+
+def normalize_phone(phone: str, default_region: str = "AU") -> str:
+    parsed = phonenumbers.parse(phone, default_region)
+    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+```
+
+---
+
+## Pagination (For Large Datasets)
+
+If returning more than 10,000 contacts, implement cursor-based pagination:
+
+### Request
+
+```http
+GET /api/v1/contacts?limit=10000&cursor=<cursor_token>
+```
+
+### Response
+
+```json
+{
+  "contacts": [...],
+  "total_count": 150000,
+  "next_cursor": "eyJvZmZzZXQiOjEwMDAwfQ==",
+  "has_more": true
+}
+```
+
+---
+
+## Incremental Updates (Optional)
+
+For efficient updates, implement a delta endpoint:
+
+### GET /contacts/delta
+
+```http
+GET /api/v1/contacts/delta?since=2026-01-12T00:00:00Z
+```
+
+### Response
+
+```json
+{
+  "added": [
+    { "phone_number": "+61400111222", "name": "New Contact", ... }
+  ],
+  "updated": [
+    { "phone_number": "+61415790018", "name": "Updated Name", ... }
+  ],
+  "deleted": [
+    "+61400333444"
+  ],
+  "generated_at": "2026-01-13T10:30:00Z"
+}
+```
+
+---
+
+## Icon/Avatar Requirements
+
+If providing contact icons:
+
+| Property | Requirement |
+|----------|-------------|
+| Format | PNG (preferred) or JPEG |
+| Size | 256x256 pixels (will be scaled down) |
+| File size | Max 50 KB |
+| Background | Transparent (PNG) or solid color |
+| Accessibility | Must be publicly accessible URL or provide auth |
+
+---
+
+## Error Responses
+
+### Standard Error Format
+
+```json
+{
+  "error": {
+    "code": "INVALID_REQUEST",
+    "message": "Invalid phone number format",
+    "details": {
+      "phone_number": "+61 invalid",
+      "reason": "Contains spaces"
+    }
+  }
+}
+```
+
+### Error Codes
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `INVALID_REQUEST` | Malformed request |
+| 401 | `UNAUTHORIZED` | Invalid or missing API key |
+| 429 | `RATE_LIMITED` | Too many requests |
+| 500 | `INTERNAL_ERROR` | Server error |
+
+---
+
+## Performance Requirements
+
+| Metric | Requirement |
+|--------|-------------|
+| Response time | < 30 seconds for full dataset |
+| Availability | 99.9% uptime |
+| Rate limit | At least 10 requests/minute |
+| Timeout | Support requests up to 60 seconds |
+
+---
+
+## Security Requirements
+
+| Requirement | Description |
+|-------------|-------------|
+| Transport | HTTPS only (TLS 1.2+) |
+| Authentication | API key in `Authorization` header |
+| IP Whitelist | Optional - whitelist PIR server IPs |
+| Data encryption | Encrypt PII at rest |
+
+---
+
+## Sample Test Data
+
+```json
+{
+  "contacts": [
+    {
+      "phone_number": "+61415790018",
+      "name": "John Smith",
+      "category": "person",
+      "block": false,
+      "cache_expiry_minutes": 1440
+    },
+    {
+      "phone_number": "+61280001234",
+      "name": "Acme Corporation",
+      "category": "business",
+      "block": false,
+      "cache_expiry_minutes": 10080
+    },
+    {
+      "phone_number": "+61400999888",
+      "name": "Known Scammer",
+      "category": "unspecified",
+      "block": true,
+      "cache_expiry_minutes": 43200
+    }
+  ]
+}
+```
